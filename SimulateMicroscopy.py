@@ -1,44 +1,36 @@
 #!/usr/bin/env python
+'''
+Author: David Ladd
 
-#> \file
-#> \author David Ladd
-#> \brief 
-#>
-#> \section LICENSE
-#>
-#> Version: MPL 1.1/GPL 2.0/LGPL 2.1
-#>
-#> The contents of this file are subject to the Mozilla Public License
-#> Version 1.1 (the "License"); you may not use this file except in
-#> compliance with the License. You may obtain a copy of the License at
-#> http://www.mozilla.org/MPL/
-#>
-#> Software distributed under the License is distributed on an "AS IS"
-#> basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See the
-#> License for the specific language governing rights and limitations
-#> under the License.
-#>
-#> \section DESCRIPTION
-#>
-#> This program interpolates irregularly spaced data onto a regular grid.
-#> The intended use is to interpolate fluorescence data from irregularly
-#> spaced nodal points in a finite element reaction-diffusion model onto
-#> a regular grid, simulating an experimental fluorescence signal.
-#<
+Brief: Convert finite element FCa field results to simulated confocal
+       microscopy data to be processed by CaCLEAN.
 
-import results.utilities as util
+Copyright 2019 David Ladd, University of Melbourne
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+'''
+
+import inputs.utilities as util
 import numpy as np
 import math
 import pandas as pd
 import naturalneighbor
-import matplotlib.pyplot as plt
-import matplotlib.animation as animation
 import skimage.io
-from scipy import signal
 import trimesh
 import scipy
 import scipy.io
-from scipy import ndimage
+from scipy import signal
+#import matplotlib.pyplot as plt
 
 #=================================================================
 # C l a s s e s
@@ -56,53 +48,51 @@ class fieldInfo(object):
 # =====================================
 # C o n t r o l   P a n e l
 # =====================================
+inputsDir = "./inputs/"
+FE_modelDir = '../cardiaccalcium_finiteelement/'
 # -------------------------------------
-# Input nodal irregular data info
+# Input nodal FE data info
 # -------------------------------------
 stopTime = 30.                             # finish time for the FEM simulation (ms)
 startTime = 0.0                            # start time for the FEM simulation (ms)  
 timeIncrement = 0.1                        # timestep increment (ms)
-numberOfProcessors = 4                    # number of processors if run as an MPI job
-species = [3]                          # Ca(1), F(2), FCa(3), CaM(4), CaMCa(5), ATP(6), ATPCa(7)
+numberOfProcessors = 8                     # number of processors if run as an MPI job
+species = [3]                              # Ca(1), F(2), FCa(3), CaM(4), CaMCa(5), ATP(6), ATPCa(7)
 speciesLabel = ['FCa']
 dependentFieldNumber = 2                   # The dependent field of interest
 outputFrequency = 50                       # the output frequency of the FEM solver (or desired frequency to read the node data files at)
-regSpace =  0.05375 #1075 #0.0215 0.05375  # in um
-outputSpacingStep = 4
-psfFile = 'psf53.tif'
+regSpace =  0.05375 #1075 #0.0215 0.05375  # regular grid spacing to interpolate to (in um)
+outputSpacingStep = 4   # TODO: check this
+psfFile = inputsDir + 'psf53.tif'
 roundTo = regSpace
 initFCa = 2.08
 padding = 0
 SNR = 100.0
-#numSlicesEachSide = 10
 
 # -------------------------------------
 # Identify FEM I/O files
 # -------------------------------------
-meshDir = '/ssd/opencmiss/projects/cardiac_ecc/meshinputs/'
-nodeFile = meshDir + 'Combined_8Sarc_1319kNodes_node.h5'  #'Combined_8Sarc_1436kNodes_node.h5'  #1319
-path = "/ssd/opencmiss/projects/cardiac_ecc/results/extrusion/timelag/8Sarc/1319kNodes/Mito/n4/"
-inputPath = path + "output/"
-surfaceMaskFile = meshDir + "Combined_8Sarc_503kNodes_surfaceFixed.stl"
+meshDir = FE_modelDir + 'input/'
+nodeFile = meshDir + 'Combined_8Sarc_1319kNodes_node.h5'  #'Combined_8Sarc_1436kNodes_node.h5'
+FE_resultsDir = FE_modelDir + "output/"
+surfaceMaskFile = inputsDir + "Combined_8Sarc_503kNodes_surfaceFixed.stl"
 boundaryTol = 2.1*regSpace
-caclean_path = '/home/dladd/CaCLEAN/'
+caclean_path = './'
 
 # -------------------------------------
 # Identify RyR I/O files
 # -------------------------------------
 spacingType = "1umSpacing"
-mitoModel = 'Mito'
+mitoModel = 'NoMito'
 numSarc = 8
 numRyrPerSarc = 51 #123
 maxClustersPerSlice = 200
 numberOfKNodes = 1319 #1436 #1319
-#ryrClusterCentersDir = ('/home/dladd/RyR-simulator/output-files/target-tomo-cell-parallel-offset05-N123/')
-ryrClusterCentersDir = ('/home/dladd/RyR-simulator/output-files/target-tomo-cell-parallel-hardcore-nooffset_N50_h1/')
+ryrClusterCentersDir = inputsDir + 'ryr_locations/N' + str(numRyrPerSarc) + '/'
 detectRyrTol = 0.2
 detectRyrTolInc = 0.01
 detectRyrTolMax = 1.5000001
 # -------------------------------------
-
 
 # Read in the node and element maps generated by tetgen
 store = pd.HDFStore(nodeFile)
@@ -153,9 +143,9 @@ for i in range(xLen):
             grid[c] = [x[i], y[j], z[k]]
             c += 1
 
-# # -------------------------------------
-# # Read in FEM nodal data
-# # -------------------------------------
+# -------------------------------------
+# Read in FEM nodal data
+# -------------------------------------
 # Get number of timesteps
 totalSimTime = stopTime - startTime
 numberOfTimesteps = 1
@@ -170,7 +160,7 @@ specData = np.zeros((numberOfTimesteps, totalNumberOfNodes))
 nn_interp = np.zeros((numberOfTimesteps, gridDimensions[0], gridDimensions[1], gridDimensions[2]))
 
 outString = str(int(totalNumberOfNodes/1000)) + 'kNodes'
-specGeomDataFile = inputPath + '/FCa_' + outString + '_' +  str(numberOfTimesteps) + 'timesteps.npz'
+specGeomDataFile = FE_resultsDir + 'FCa_' + outString + '_' +  str(numberOfTimesteps) + 'timesteps.npz'
 try:
     with open(specGeomDataFile):
         print('Reading FEM data from: ' + specGeomDataFile)
@@ -183,7 +173,7 @@ except:
         outputStep = timestep * outputFrequency
         s = 0
         for speciesNumber in species:
-            filenameRoot = inputPath + '/TIME_STEP_SPEC_'+ str(speciesNumber) + '.part'
+            filenameRoot = FE_resultsDir + 'TIME_STEP_SPEC_'+ str(speciesNumber) + '.part'
             for proc in range(numberOfProcessors):
                 filename = filenameRoot + str(proc).zfill(2) + '.' + str(outputStep).zfill(3) + '.exnode'
                 #filename += str(proc).zfill(2) + '.300.exnode'
@@ -245,10 +235,6 @@ multiSliceData = []
 multiBgrData = []
 multiMask = []
 
-#multiTolerances = []
-#sliceList = list(range((int(yLen/2) - numSlicesEachSide), (int(yLen/2) + numSlicesEachSide)))
-#sliceList = list(np.linspace(1, yLen-1, yLen/2, dtype="int"))
-
 sliceList = list(np.arange(5, yLen-4, 2, dtype="int"))
 numSlices = len(sliceList)
 
@@ -303,11 +289,9 @@ for s in range(numSlices):
     multiSliceData.append(noisySliceData)
     multiBgrData.append(bgr)
     multiMask.append(mask_out_slice)
-    #multiRyrClusterCenters.append(ryrSliceCentersScaled)
-    #multiTolerances.append(tolerances)
 
 xyt = [x[1]-x[0], z[1]-z[0], timeIncrement*outputFrequency]
-outString = caclean_path + "input/scipyConvolve_batchAll_wideSlice_psf107HalfZ_interp"+ str(int(regSpace*1000)) + "_SNR" + str(int(SNR)) + '_' + spacingType + '_' + mitoModel + '_' + str(xLen) + 'x' + str(zLen) + 'x' + str(numberOfTimesteps) + '_multDetect'
+outString = caclean_path + "simulatedMicroscopyResults_interp"+ str(int(regSpace*1000)) + "_SNR" + str(int(SNR)) + '_' + spacingType + '_' + mitoModel + '_' + str(xLen) + 'x' + str(zLen) + 'x' + str(numberOfTimesteps)
 
 outputFile = outString + '.mat'
 print('Writing MatLab file: ' + outputFile)
