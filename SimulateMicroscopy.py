@@ -30,6 +30,7 @@ import trimesh
 import scipy
 import scipy.io
 from scipy import signal
+import os
 #import matplotlib.pyplot as plt
 
 #=================================================================
@@ -49,6 +50,7 @@ class fieldInfo(object):
 # C o n t r o l   P a n e l
 # =====================================
 inputsDir = "./inputs/"
+outputsDir = "./simulatedMicroscopy_outputs/"
 FE_modelDir = '../cardiaccalcium_finiteelement/'
 # -------------------------------------
 # Input nodal FE data info
@@ -77,7 +79,6 @@ nodeFile = meshDir + 'Combined_8Sarc_1319kNodes_node.h5'  #'Combined_8Sarc_1436k
 FE_resultsDir = FE_modelDir + "output/"
 surfaceMaskFile = inputsDir + "Combined_8Sarc_503kNodes_surfaceFixed.stl"
 boundaryTol = 2.1*regSpace
-caclean_path = './'
 
 # -------------------------------------
 # Identify RyR I/O files
@@ -153,44 +154,60 @@ if totalSimTime > timeIncrement:
     numberOfTimesteps += int((totalSimTime/timeIncrement)/outputFrequency)
 
 print('Number of timsteps: ' + str(numberOfTimesteps))
-# Collect geometry and species data from OpenCMISS .exnode files
-fields = fieldInfo()
-specData = np.zeros((numberOfTimesteps, totalNumberOfNodes))
 
 nn_interp = np.zeros((numberOfTimesteps, gridDimensions[0], gridDimensions[1], gridDimensions[2]))
-
-outString = str(int(totalNumberOfNodes/1000)) + 'kNodes'
-specGeomDataFile = FE_resultsDir + 'FCa_' + outString + '_' +  str(numberOfTimesteps) + 'timesteps.npz'
+interpDataFile = outputsDir + 'FCa_' + spacingType  + '_' + mitoModel + '_interp' + str(int(regSpace*1000)) + '_' + str(numberOfTimesteps) + 'timesteps.npz'
 try:
-    with open(specGeomDataFile):
-        print('Reading FEM data from: ' + specGeomDataFile)
-        loaded = np.load(specGeomDataFile)
-        specData = loaded['spec']
-        nodeGeom = loaded['geom']
-except:
+    os.makedirs(outputsDir)
+except OSError as e:
+    if e.errno != 17:
+        raise
+# Check whether we have already read and stored the interpolated data
+if os.path.isfile(interpDataFile):
+    with open(interpDataFile):
+        print('Reading interpolated data from: ' + interpDataFile)
+        loaded = np.load(interpDataFile)
+        nn_interp = loaded['nn_interp']
+else:
+    specData = np.zeros((numberOfTimesteps, totalNumberOfNodes))
+    specGeomDataFile = outputsDir + 'FCa_' + spacingType  + '_' + mitoModel + '_NodalData_' +  str(numberOfTimesteps) + 'timesteps.npz'
+    # Check whether we have already read and stored the nodal data
+    if os.path.isfile(specGeomDataFile):
+        with open(specGeomDataFile):
+            print('Reading FEM data from: ' + specGeomDataFile)
+            loaded = np.load(specGeomDataFile)
+            specData = loaded['spec']
+            nodeGeom = loaded['geom']
+    else:
+        # Collect geometry and species data from OpenCMISS .exnode files
+        fields = fieldInfo()
+        for timestep in range(numberOfTimesteps):
+            nodeData = np.zeros((totalNumberOfNodes,4))
+            outputStep = timestep * outputFrequency
+            s = 0
+            for speciesNumber in species:
+                filenameRoot = FE_resultsDir + 'TIME_STEP_SPEC_'+ str(speciesNumber) + '.part'
+                for proc in range(numberOfProcessors):
+                    filename = filenameRoot + str(proc).zfill(2) + '.' + str(outputStep).zfill(3) + '.exnode'
+                    #filename += str(proc).zfill(2) + '.300.exnode'
+                    importNodeData = np.zeros((totalNumberOfNodes,4))
+                    print('Reading: ' + filename)
+                    util.readExnode(filename,fields,importNodeData,totalNumberOfNodes,dependentFieldNumber)
+                    nodeData += importNodeData
+                specData[timestep] = nodeData[:,3]
+                s+=1
+        print('Saving nodal data to: ' + specGeomDataFile)
+        # Save nodal data
+        np.savez_compressed(specGeomDataFile, spec=specData, geom=nodeGeom)
+
     for timestep in range(numberOfTimesteps):
-        nodeData = np.zeros((totalNumberOfNodes,4))
-        outputStep = timestep * outputFrequency
-        s = 0
-        for speciesNumber in species:
-            filenameRoot = FE_resultsDir + 'TIME_STEP_SPEC_'+ str(speciesNumber) + '.part'
-            for proc in range(numberOfProcessors):
-                filename = filenameRoot + str(proc).zfill(2) + '.' + str(outputStep).zfill(3) + '.exnode'
-                #filename += str(proc).zfill(2) + '.300.exnode'
-                importNodeData = np.zeros((totalNumberOfNodes,4))
-                print('Reading: ' + filename)
-                util.readExnode(filename,fields,importNodeData,totalNumberOfNodes,dependentFieldNumber)
-                nodeData += importNodeData
-            specData[timestep] = nodeData[:,3]
-            s+=1
-    print('Saving nodal data to: ' + specGeomDataFile)
-    np.savez_compressed(specGeomDataFile, spec=specData, geom=nodeGeom)
+        print('   Performing discrete Sibson interpolation, Time (ms): ' + str(timestep*timeIncrement*outputFrequency))
+        specData[timestep, specData[timestep] < 0.01] = initFCa
+        nn_interp[timestep] = naturalneighbor.griddata(nodeGeom, specData[timestep], grid_ranges)
 
-
-for timestep in range(numberOfTimesteps):
-    print('   Performing discrete Sibson interpolation, Time (ms): ' + str(timestep*timeIncrement*outputFrequency))
-    specData[timestep, specData[timestep] < 0.01] = initFCa
-    nn_interp[timestep] = naturalneighbor.griddata(nodeGeom, specData[timestep], grid_ranges)
+    # Save interpolated data
+    np.savez_compressed(interpDataFile, nn_interp=nn_interp)
+    print('Saving interpolated data to: ' + interpDataFile)
 
 # -------------------------------------
 # Convolve image against selected PSF
@@ -238,6 +255,13 @@ multiMask = []
 sliceList = list(np.arange(5, yLen-4, 2, dtype="int"))
 numSlices = len(sliceList)
 
+# For each slice, construct a list of RyRs with centers within
+# a range of distance tolerances (admissible windows) and a 
+# mask file to indicate which pixels represent the intracellular space.
+# Downsample the convolved data to match typical microscopy resolution
+# (215 nm xy, 5 ms in time by default). Also create a background image
+# set to the initial FCa conditions. Add light noise (SNR=100) to the 
+# simulated microscopy data and the background image.
 multiRyrClusterCenters = np.full((numSlices, numTol, maxClustersPerSlice, 2), np.nan)
 for s in range(numSlices):
     ySlice = sliceList[s]
@@ -249,8 +273,7 @@ for s in range(numSlices):
         centersTemp = ryrCenters[np.where(np.isclose(ryrCenters[:, 1], yLocation, atol=detectRyrTol))]
         numDetect = len(centersTemp)
         scaled = (np.delete(centersTemp, 1, axis = 1) / (regSpace*outputSpacingStep)
-                  + padding*outputSpacingStep
-                  + 1.)  # pixel space conversions 
+                  + padding*outputSpacingStep + 1.)  # pixel space conversions 
         multiRyrClusterCenters[s, tol,:numDetect] = scaled
     # mask
     print('surface mask used: ' + surfaceMaskFile)
@@ -271,13 +294,12 @@ for s in range(numSlices):
                 maskOut[i, k] = False
             c += 1
     mask_out_slice = maskOut
-    # zeroed background image
-    # x, y , and t resolution
+    # Downsample the convolved data in x, y, and t
     convolvedReduced = convolved[:, 0:gridDimensions[0]:outputSpacingStep,
                                  0:gridDimensions[1]:outputSpacingStep,
                                  0:gridDimensions[2]:outputSpacingStep]
     sliceData = np.moveaxis(np.squeeze(convolvedReduced[:, :, ySlice, :]), 0, 2)
-    # Add noise
+    # Add light noise to the slice data and a background image
     noisySliceData = np.zeros_like(sliceData)
     bgr = np.zeros_like(sliceData)
     stdDev = np.mean(sliceData[:, :, 0]) / SNR
@@ -291,7 +313,7 @@ for s in range(numSlices):
     multiMask.append(mask_out_slice)
 
 xyt = [x[1]-x[0], z[1]-z[0], timeIncrement*outputFrequency]
-outString = caclean_path + "simulatedMicroscopyResults_interp"+ str(int(regSpace*1000)) + "_SNR" + str(int(SNR)) + '_' + spacingType + '_' + mitoModel + '_' + str(xLen) + 'x' + str(zLen) + 'x' + str(numberOfTimesteps)
+outString = outputsDir + "simulatedMicroscopyResults_interp"+ str(int(regSpace*1000)) + "_SNR" + str(int(SNR)) + '_' + spacingType + '_' + mitoModel + '_' + str(xLen) + 'x' + str(zLen) + 'x' + str(numberOfTimesteps)
 
 outputFile = outString + '.mat'
 print('Writing MatLab file: ' + outputFile)
