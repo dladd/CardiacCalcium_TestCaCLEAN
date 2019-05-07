@@ -21,10 +21,27 @@ limitations under the License.
 '''
 
 import re
+import shutil
+import requests
 
 #=================================================================
 # F u n c t i o n s
 #=================================================================
+
+def download_file(local_file, targetDir):
+    """Download the local_file from the URL"""
+    resourceLinks = {
+        'psf_50x50x140_53nmPx_fwhm_410xy_1800z.tif' : "https://melbourne.figshare.com/ndownloader/files/15081458",
+        'psf_50x50x140_53nmPx_fwhm_205xy_900z.tif' : "https://melbourne.figshare.com/ndownloader/files/15081464",
+        'psf_50x50x140_53nmPx_fwhm_820xy_3600z.tif' : "https://melbourne.figshare.com/ndownloader/files/15081461",
+        'Combined_8Sarc_503kNodes_surfaceFixed.stl' : "https://melbourne.figshare.com/ndownloader/files/15045725",
+        'Combined_8Sarc_1319kNodes_node.h5' : "https://melbourne.figshare.com/ndownloader/files/15045695"
+    }
+    url = resourceLinks[local_file]
+    r = requests.get(url, stream=True)
+    with open(targetDir + local_file, 'wb') as f:
+        shutil.copyfileobj(r.raw, f)
+
 
 def findBetween( s, first, last ):
     try:
