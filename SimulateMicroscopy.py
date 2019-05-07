@@ -51,6 +51,7 @@ class fieldInfo(object):
 # =====================================
 inputsDir = "./inputs/"
 outputsDir = "./simulatedMicroscopy_outputs/"
+testCaCLEANOutputsDir = "./TestCaCLEAN_outputs/"
 FE_modelDir = '../cardiaccalcium_finiteelement/'
 # -------------------------------------
 # Input nodal FE data info
@@ -268,6 +269,9 @@ print('Checking for surface mask file...')
 if not os.path.exists(inputsDir + surfaceMaskFile):
     print('Downloading surface mask file to directory: ' + inputsDir)
     util.download_file(surfaceMaskFile, inputsDir)
+# Load outer surface mask
+print('surface mask used: ' + inputsDir + surfaceMaskFile)
+mesh = trimesh.load(inputsDir + surfaceMaskFile)
 
 # For each slice, construct a list of RyRs with centers within
 # a range of distance tolerances (admissible windows) and a 
@@ -289,9 +293,6 @@ for s in range(numSlices):
         scaled = (np.delete(centersTemp, 1, axis = 1) / (regSpace*outputSpacingStep)
                   + padding*outputSpacingStep + 1.)  # pixel space conversions 
         multiRyrClusterCenters[s, tol,:numDetect] = scaled
-    # mask
-    print('surface mask used: ' + inputsDir + surfaceMaskFile)
-    mesh = trimesh.load(inputsDir + surfaceMaskFile)
     # mask out the points outside of the mesh
     print('checking if pixels in mesh...')
     ySliceGrid = grid[np.where(np.isclose(grid[:, 1], yLocation, atol=detectRyrTolInc))]
@@ -327,7 +328,7 @@ for s in range(numSlices):
     multiMask.append(mask_out_slice)
 
 xyt = [x[1]-x[0], z[1]-z[0], timeIncrement*outputFrequency]
-outString = outputsDir + "simulatedMicroscopyResults_interp"+ str(int(regSpace*1000)) + "_SNR" + str(int(SNR)) + '_' + spacingType + '_' + mitoModel + '_' + str(xLen) + 'x' + str(zLen) + 'x' + str(numberOfTimesteps)
+outString = outputsDir + "simulatedMicroscopyResults_interp" + str(int(regSpace*1000)) + "_SNR" + str(int(SNR)) + '_' + spacingType + '_' + mitoModel + '_' + str(xLen) + 'x' + str(zLen) + 'x' + str(numberOfTimesteps)
 
 outputFile = outString + '.mat'
 print('Writing MatLab file: ' + outputFile)
@@ -337,6 +338,13 @@ scipy.io.savemat(outputFile, mdict={'MultiMask': multiMask,
                                     'MultiBgr': multiBgrData,
                                     'MultiIdenoised': multiSliceData,
                                     'xyt_dim': xyt})
+
+# Make outputs dir for TestCaCLEAN results (easier to do here than in Matlab)
+try:
+    os.makedirs(testCaCLEANOutputsDir)
+except OSError as e:
+    if e.errno != 17:
+        raise
 
 
 # # timestep = 4
