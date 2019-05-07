@@ -10,6 +10,7 @@ addpath('../CaCLEAN/FMINSEARCHBND/FMINSEARCHBND');
 % 1um enforced spacing model vs. standard RyR spacing)
 filename = 'simulatedMicroscopy_outputs/simulatedMicroscopyResults_interp53_SNR100_1umSpacing_NoMito_54x80x7.mat';
 plotTitle = 'Low cluster density (N=408), no mitochondria'; % 984  408
+outfile = 'TestCaCLEAN_outputs/LowDensity_NoMito';
 
 % "Figure 3" is an example of classification for visual inspection. Pick a
 % slice (between 1-22) and an admissible window (tolerance). Originally set
@@ -20,7 +21,6 @@ fig3Tol = 64;
 
 % Load up the data for this example
 load(filename);
-outfile = strcat('TestCaCLEAN_', filename);
 
 % Set up some preliminary variables
 clusterDiameter = 0.2; % 200 nm
@@ -34,10 +34,6 @@ FP_detected = NaN(numSlices, numTol);
 FN_actual = NaN(numSlices, numTol);
 TP_detected = NaN(numSlices, numTol);
 TP_actual = NaN(numSlices, numTol);
-
-% For collecting all model permutations in a composite figure
-%TPD_all = NaN(4, numSlices, numTol);
-%TPA_all = NaN(4, numSlices, numTol);
 
 % Loop through the image slices
 for slice=1:numSlices
@@ -299,23 +295,69 @@ xlabel('Admissible window (nm)');
 ylabel('Number of events');
 
 
-%% F i g u r e   5:  Precision & recall as a function of admissible window
+%% F i g u r e   5:  Precision, recall, and F1-Score as a function of admissible window
 figure(6);
-hold on;
 clf;
+hold on;
 x = RyrTolerances * 1000;
 snPlot = shadedErrorBar(x,Recall,{@mean,@std},'lineprops','-b','patchSaturation',0.33);
 precPlot = shadedErrorBar(x,Prec,{@mean,@std},'lineprops','-r','patchSaturation',0.33);
 snPlot.mainLine.LineWidth = 2;
 precPlot.mainLine.LineWidth = 2;
+
+meanPrec = squeeze(nanmean(Prec));
+meanRecall = squeeze(nanmean(Recall));
+f1Score = 2.0 .* (meanPrec .* meanRecall)./(meanPrec + meanRecall);
+f1Plot = plot(x,f1Score,'-k','LineWidth',2);
+[f1Max, f1MaxIdx] = max(f1Score);
+maxF1X = x(f1MaxIdx);
+
 grid on;
 grid minor;
 axis([0 1600 0 1.1]);
-legend([snPlot.mainLine precPlot.mainLine], 'Recall', 'Precision', 'Location','southeast');
-%title('Half FWHM, high density & no mito');
-title(plotTitle)
+legend([snPlot.mainLine precPlot.mainLine f1Plot], 'Recall', 'Precision', 'F1-Score', 'Location','southeast');
+title(plotTitle);
 xlabel('Admissible window (nm)');
 
+% Write figure to file
+fig = gcf;
+fig.PaperUnits = 'inches';
+fig.PaperPosition = [0 0 6 4];
+print(strcat(outfile, '.png'), '-dpng', '-r300');
+
+% Save F1, Recall, and Precision values to text file 
+%fullErrMinIdx = errMinIdx + startIdx - 1;
+fileID = fopen(strcat(outfile,'.txt'),'w');
+fprintf(fileID, strcat(plotTitle, '\n\n'));
+outString = strcat('F1 Max admissible window:\t', string(maxF1X), 'nm\n');
+fprintf(fileID, outString);
+outString = strcat('F1 max:\t', string(f1Max), '\n');
+fprintf(fileID, outString);
+meanRecall = nanmean(Recall(:,f1MaxIdx));
+stdRecall = std(Recall(:,f1MaxIdx));
+outString = strcat('Recall :\t', string(meanRecall), '\t+/-\t', string(stdRecall) ,'\n');
+fprintf(fileID, outString);
+meanPrec = nanmean(Prec(:,f1MaxIdx));
+stdPrec = std(Prec(:,f1MaxIdx));
+outString = strcat('Precision :\t', string(meanPrec), '\t+/-\t', string(stdPrec) ,'\n\n');
+fprintf(fileID, outString);
+
+% Save intersection point F1, Recall and Precision values to text file
+[diffPrecRecallIP,IPIdx] = min(abs(nanmean(Prec)-nanmean(Recall)));
+outString = strcat('Intersection point admissible window:\t', string(x(IPIdx)), 'nm\n');
+fprintf(fileID, outString);
+outString = strcat('F1 score:\t', string(f1Score(IPIdx)), '\n');
+fprintf(fileID, outString);
+meanRecall = nanmean(Recall(:,IPIdx));
+stdRecall = std(Recall(:,IPIdx));
+outString = strcat('Recall :\t', string(meanRecall), '\t+/-\t', string(stdRecall) ,'\n');
+fprintf(fileID, outString);
+meanPrec = nanmean(Prec(:,IPIdx));
+stdPrec = std(Prec(:,IPIdx));
+outString = strcat('Precision :\t', string(meanPrec), '\t+/-\t', string(stdPrec) ,'\n\n');
+fprintf(fileID, outString);
+
+fclose(fileID);
 
 %% F i g u r e   6:  Precision-recall plot
 startNm = 80;
@@ -337,7 +379,6 @@ prec_all = nanmean(TP_detected(:,startAW:endAW) ./ (TP_detected(:,startAW:endAW)
 figure(7);
 plot(recall_all, prec_all, 'LineWidth',2);    
 axis([0 1.0 0 1.1]);
-%legend('High cluster density, with mito', 'High cluster density, no mito', 'Low cluster density, with mito', 'Low cluster density, no mito', 'Location','west');
 xlabel('Recall');
 ylabel('Precision');
 title(plotTitle)
@@ -362,3 +403,5 @@ set(yT, 'FontSize', 12);
 legend('Filtered results', 'Gaussian fit');
 title('Fraction of detected sites as a function of distance z from focus');
 
+%% Save workspace variables to file
+%save(strcat(outfile,'.mat'));
