@@ -224,7 +224,7 @@ if convolve:
         print('Downloading PSF file to directory: ' + inputsDir)
         util.download_file(psfFile, inputsDir)
     convolved = np.zeros_like(nn_interp)
-    psfOrig = skimage.io.imread(psfFile)
+    psfOrig = skimage.io.imread(inputsDir + psfFile)
     # in our case, the y-axis is the z depth for the simulated microscopy
     psf = np.moveaxis(psfOrig, 2, 1)
     magPsf = sum(sum(sum(psf)))
